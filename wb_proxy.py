@@ -5673,7 +5673,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
         log(fmt % args)
-    def _json(self, code, obj):
+    def _json(self, code, obj, cookies=None):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -5682,6 +5682,8 @@ class Handler(BaseHTTPRequestHandler):
         # request line is rejected before it), so fall back to "".
         if cors_origin_allowed(getattr(self, "path", "") or ""):
             self.send_header("Access-Control-Allow-Origin", "*")
+        for cookie in (cookies or ()):
+            self.send_header("Set-Cookie", cookie)
         self.end_headers()
         self.wfile.write(body)
         # Flush here rather than relying on the caller: with HTTP/1.1
@@ -6019,8 +6021,36 @@ class Handler(BaseHTTPRequestHandler):
         """
         token = (self.headers.get("X-Panel-Token") or "").strip()
         return token
+    def _panel_cookie_token(self):
+        """Session token from the panel cookie set by /panel/login.
+        The dashboard keeps the token in a cookie as well as in sessionStorage,
+        so a new tab - or a browser restarted inside the session TTL - opens the
+        panel without asking for the password again. Parsed by hand rather than
+        with SimpleCookie because the browser may send several cookies and only
+        the exact name counts.
+        """
+        raw = self.headers.get("Cookie") or ""
+        for part in raw.split(";"):
+            name, sep, value = part.strip().partition("=")
+            if sep and name == wb_settings.PANEL_COOKIE_NAME:
+                return urllib.parse.unquote(value.strip())
+        return ""
+    def _panel_cookie(self, token, max_age=None):
+        """The Set-Cookie value that carries (or clears) the panel session.
+        HttpOnly keeps the token out of page scripts, so a compromised
+        dashboard string cannot read it; SameSite=Lax keeps a stray page on the
+        LAN from driving a state-changing POST with it.
+        """
+        if max_age is None:
+            max_age = wb_settings.SESSION_TTL
+        parts = ["%s=%s" % (wb_settings.PANEL_COOKIE_NAME,
+                            urllib.parse.quote(token or "")),
+                 "Path=/", "HttpOnly", "SameSite=Lax", "Max-Age=%d" % int(max_age)]
+        return "; ".join(parts)
     def _panel_ok(self):
-        return PANEL.valid(self._panel_token())
+        # Either credential being valid is enough: the header token is what the
+        # current tab holds, the cookie is what survives a new tab.
+        return PANEL.valid(self._panel_token()) or PANEL.valid(self._panel_cookie_token())
     @staticmethod
     def _is_panel_route(path):
         """Management endpoints shown in the web panel.
@@ -6109,14 +6139,21 @@ class Handler(BaseHTTPRequestHandler):
     def _get_panel_status(self):
         # Answer without a token: the dashboard needs to know whether to
         # show the login screen before it can hold a session.
+        authenticated = self._panel_ok()
         info = {
             "panel_password_required": True,
             "panel_password_is_default": wb_settings.panel_password_is_default(ACCOUNTS_DIR),
-            "authenticated": self._panel_ok(),
+            "authenticated": authenticated,
         }
         # Whether a key exists is not a secret; its value never leaves the
         # process, and the settings endpoint only reports a masked form.
         info["api_key_set"] = bool(API_KEY)
+        if not authenticated:
+            # A cookie left over from an earlier run (the gateway restarted, or
+            # the token aged out) is dead weight: clear it so the next visit
+            # starts from a clean slate instead of carrying a stale token around.
+            return self._json(200, info,
+                              cookies=[self._panel_cookie("", max_age=0)])
         return self._json(200, info)
 
     def _get_health(self):
@@ -6814,10 +6851,14 @@ class Handler(BaseHTTPRequestHandler):
                 "ok": True,
                 "token": token,
                 "using_default_password": wb_settings.panel_password_is_default(ACCOUNTS_DIR),
-            })
+            }, cookies=[self._panel_cookie(token)])
         if path == "/panel/logout":
-            PANEL.revoke(self._panel_token())
-            return self._json(200, {"ok": True})
+            # Revoke both halves of the session and tell the browser to forget
+            # the cookie; leaving it behind would look logged-in on the next load.
+            for token in (self._panel_token(), self._panel_cookie_token()):
+                PANEL.revoke(token)
+            return self._json(200, {"ok": True},
+                              cookies=[self._panel_cookie("", max_age=0)])
         # Everything past this point requires an authenticated panel session.
         if not self._panel_ok():
             return self._error(401, "panel password required", "invalid_request_error")
@@ -6833,7 +6874,8 @@ class Handler(BaseHTTPRequestHandler):
                 # Rotating the password invalidates every other browser session.
                 PANEL.revoke_all()
             token = PANEL.create()
-            return self._json(200, {"ok": True, "token": token})
+            return self._json(200, {"ok": True, "token": token},
+                              cookies=[self._panel_cookie(token)])
         return self._error(404, "not found", "invalid_request_error")
     def _handle_accounts(self, path, payload):
         """Account-management endpoints (dashboard uses these)."""

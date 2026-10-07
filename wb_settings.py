@@ -33,6 +33,10 @@ MAX_PRICING_REFRESH_MINUTES = 24 * 30 * 60
 # Whether a model name may inherit its price from a suffix-stripped base
 # (deepseek-r1-0528-lkeap → deepseek-r1-0528). Missing key reads as on.
 PRICING_VARIANT_INHERIT_KEY = "pricing_variant_inherit"
+# The panel session also travels in a first-party cookie, so a new tab - or a
+# browser restarted inside SESSION_TTL - opens the panel without asking for the
+# password again. The cookie is HttpOnly: page scripts never see the token.
+PANEL_COOKIE_NAME = "wb_panel_token"
 
 _lock = threading.RLock()
 
@@ -868,8 +872,10 @@ def find_proxy_slot(accounts_dir, slot_id):
 class PanelSessions(object):
     """In-memory bearer tokens handed out after a successful panel login.
 
-    Deliberately not persisted: restarting the gateway logs browsers out, which
-    is the safer default for a LAN tool that people expose behind a port map.
+    Deliberately not persisted server-side: restarting the gateway logs browsers
+    out, which is the safer default for a LAN tool that people expose behind a
+    port map. The browser keeps its token in a cookie (PANEL_COOKIE_NAME) as well,
+    so closing a tab does not cost the user the password again.
     """
 
     def __init__(self, ttl=SESSION_TTL):
