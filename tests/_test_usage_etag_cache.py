@@ -103,7 +103,9 @@ proc = life.spawn_managed(
     [PY, os.path.join(ROOT, "wb_proxy.py"), "--port", str(port), "--host", "127.0.0.1",
      "--accounts-dir", store],
     cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
-    env=dict(os.environ, WB_PROXY_USAGE_DIR=usage_dir, WB_STATS_TTL=str(TTL)))
+    env=dict(os.environ, WB_PROXY_USAGE_DIR=usage_dir, WB_STATS_TTL=str(TTL),
+             WB_PROXY_PANEL_SESSIONS_FILE=os.path.join(
+                 os.path.dirname(usage_dir), "panel-sessions.json")))
 
 TOKEN = None
 

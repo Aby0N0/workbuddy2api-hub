@@ -18,6 +18,11 @@ catalog/*.json
 catalog/*.tmp
 !catalog/README.txt
 
+# 面板登录会话：只存令牌的 SHA-256 摘要（不存原文），所以网关重启后浏览器
+# 仍免登录；7 天从登录那一刻起算。删掉它 = 所有浏览器重新登录。
+panel-sessions.json
+panel-sessions.json.tmp
+
 # 运行时日志文件
 logs/
 

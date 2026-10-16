@@ -2019,43 +2019,106 @@ def find_proxy_slot(accounts_dir, slot_id):
 
 
 class PanelSessions(object):
-    """In-memory bearer tokens handed out after a successful panel login.
+    """Bearer tokens handed out after a successful panel login.
 
-    Deliberately not persisted server-side: restarting the gateway logs browsers
-    out, which is the safer default for a LAN tool that people expose behind a
-    port map. The browser keeps its token in a cookie (PANEL_COOKIE_NAME) as well,
-    so closing a tab does not cost the user the password again.
+    The table is written to `path` so that restarting the gateway does not log
+    every browser out: a cookie the browser already holds keeps working for the
+    rest of its SESSION_TTL. This does not lengthen the window - the clock still
+    runs from login, not from startup - and it does not weaken revocation:
+    logout and a password change still drop the tokens on disk.
+
+    Only the SHA-256 of each token is written, never the token itself, so the
+    file is not a usable credential if it leaks. Pass path=None (the default) to
+    keep the table in memory only; a caller with no writable state directory
+    wants exactly that.
     """
 
-    def __init__(self, ttl=SESSION_TTL):
+    #: Bumped if the on-disk shape ever changes.
+    VERSION = 1
+
+    def __init__(self, ttl=SESSION_TTL, path=None):
         self.ttl = ttl
+        self.path = path
         self._tokens = {}
         self._lock = threading.RLock()
+        self._load()
+
+    @staticmethod
+    def _key(token):
+        """What the store holds for a token: its digest, so the file has no secret."""
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    def _load(self):
+        if not self.path or not os.path.exists(self.path):
+            return
+        try:
+            with open(self.path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            stored = data.get("tokens") if isinstance(data, dict) else None
+            if not isinstance(stored, dict):
+                return
+            now = time.time()
+            for key, expiry in stored.items():
+                try:
+                    expiry = float(expiry)
+                except (TypeError, ValueError):
+                    continue
+                if expiry > now:
+                    self._tokens[key] = expiry
+        except Exception:
+            # A damaged or unreadable store must not stop the gateway from
+            # starting; the worst case is that everyone logs in again.
+            self._tokens = {}
+
+    def _save(self):
+        """Rewrite the store atomically, dropping anything already expired."""
+        if not self.path:
+            return
+        with self._lock:
+            now = time.time()
+            self._tokens = {k: v for k, v in self._tokens.items() if v > now}
+            payload = {"version": self.VERSION, "tokens": self._tokens}
+            try:
+                tmp = self.path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as fh:
+                    json.dump(payload, fh)
+                os.replace(tmp, self.path)
+            except OSError:
+                # Losing the store costs one login after the next restart,
+                # which is not worth failing the request over.
+                pass
 
     def create(self):
         token = secrets.token_urlsafe(24)
         with self._lock:
-            self._tokens[token] = time.time() + self.ttl
+            self._tokens[self._key(token)] = time.time() + self.ttl
+        self._save()
         return token
 
     def valid(self, token):
         if not token:
             return False
+        key = self._key(token)
         with self._lock:
-            expiry = self._tokens.get(token)
+            expiry = self._tokens.get(key)
             if not expiry:
                 return False
-            if expiry < time.time():
-                self._tokens.pop(token, None)
-                return False
-            return True
+            if expiry >= time.time():
+                return True
+            self._tokens.pop(key, None)
+        self._save()
+        return False
 
     def revoke(self, token):
         if not token:
             return
+        key = self._key(token)
         with self._lock:
-            self._tokens.pop(token, None)
+            if self._tokens.pop(key, None) is None:
+                return          # nothing changed, so nothing to write back
+        self._save()
 
     def revoke_all(self):
         with self._lock:
             self._tokens.clear()
+        self._save()

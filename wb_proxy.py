@@ -479,9 +479,14 @@ DASHBOARD_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashb
 USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "reasoning_tokens",
                 "cached_tokens", "total_tokens", "credit")
 # Web-panel access control. The panel is gated by its own password (default
-# "admin"), independent of the /v1 API key. Sessions live in memory only, so a
-# restart forces browsers to log in again.
-PANEL = wb_settings.PanelSessions()
+# "admin"), independent of the /v1 API key. Issued sessions are remembered in
+# PANEL_SESSIONS_FILE (SHA-256 digests only) so a restart does not force every
+# browser to log in again; the 7-day clock still runs from login, not from
+# startup. Override the location with WB_PROXY_PANEL_SESSIONS_FILE, the same way
+# the usage and catalog directories are overridden.
+PANEL_SESSIONS_FILE = os.environ.get("WB_PROXY_PANEL_SESSIONS_FILE") \
+    or os.path.join(os.path.dirname(os.path.abspath(__file__)), "panel-sessions.json")
+PANEL = wb_settings.PanelSessions(path=PANEL_SESSIONS_FILE)
 API_KEY_FILE_SET = False
 def configured_keys():
     """Panel-managed API keys, always read fresh so panel edits apply at once."""

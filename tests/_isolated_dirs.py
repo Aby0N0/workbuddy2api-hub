@@ -1,7 +1,7 @@
 """The isolated data root the suites were each building by hand.
 
 Nine suites opened with the same six lines: a TemporaryDirectory, an atexit
-cleanup, `accounts/` and `usage/` beneath it, and the two environment overrides
+cleanup, `accounts/` and `usage/` beneath it, and the environment overrides
 that point the gateway at them. That is the whole duplication this module
 removes.
 
@@ -21,7 +21,7 @@ import tempfile
 def isolated_data_dirs(prefix):
     """An isolated ACCOUNTS_DIR + WB_PROXY_USAGE_DIR, removed at process exit.
 
-    The two overrides are assignments, never `setdefault`: a value already in
+    The overrides are assignments, never `setdefault`: a value already in
     the environment belongs to whatever started this process, and inheriting it
     would put several suites back on one directory.
     """
@@ -33,4 +33,7 @@ def isolated_data_dirs(prefix):
     os.makedirs(usage, exist_ok=True)
     os.environ["ACCOUNTS_DIR"] = accounts
     os.environ["WB_PROXY_USAGE_DIR"] = usage
+    # 面板会话落盘文件：不隔离的话，会登录面板的套件会写进真仓库那一份。
+    os.environ["WB_PROXY_PANEL_SESSIONS_FILE"] = os.path.join(
+        tmp.name, "panel-sessions.json")
     return tmp

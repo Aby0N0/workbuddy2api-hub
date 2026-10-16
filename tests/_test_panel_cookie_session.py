@@ -6,6 +6,10 @@ the password prompt back. /panel/login now also sets a first-party HttpOnly
 cookie, and a request may authenticate with either the header token or that
 cookie.
 
+The table behind those tokens is written to disk as SHA-256 digests, so a
+gateway restart no longer throws every browser back to the password prompt: the
+7 days run from login, not from startup.
+
 Every case below drives a real gateway over a socket - no fake upstream, no
 mocked handler - and each check names the status code it expects, so the cookie
 is proven by the round trip rather than by reading the code:
@@ -17,7 +21,11 @@ is proven by the round trip rather than by reading the code:
      and a decoy name (wb_panel_token_decoy) does not count;
   5. logout and an invalid token both clear the cookie instead of leaving a
      stale one behind;
-  6. changing the password invalidates the old cookie and issues a new one.
+  6. changing the password invalidates the old cookie and issues a new one;
+  7. the table on its own: digests (never raw tokens) on disk, revoke and expiry
+     honoured across a reload, and a damaged file ignored rather than fatal;
+  8. a real restart - a second gateway process accepts the cookie the first one
+     handed out, which is what "7 days from login" actually requires.
 """
 
 import http.client
@@ -113,24 +121,94 @@ def wait_ready(port, proc, log_path):
 work = tempfile.mkdtemp(prefix="panelcookie_")
 store = os.path.join(work, "accounts")
 os.makedirs(store)
-log_path = os.path.join(work, "gateway.log")
+sessions_file = os.path.join(work, "panel-sessions.json")
+usage_dir = os.path.join(work, "usage")
+
+
+def start_gateway(port, log_name):
+    """A real gateway, sharing `store` and `sessions_file` with its siblings."""
+    log_path = os.path.join(work, log_name)
+    log_fh = open(log_path, "w", encoding="utf-8")
+    proc = subprocess.Popen(
+        [sys.executable, os.path.join(ROOT, "wb_proxy.py"), "--port", str(port),
+         "--host", "127.0.0.1", "--accounts-dir", store,
+         "--panel-password", FIRST_PASSWORD],
+        cwd=ROOT, stdout=log_fh, stderr=subprocess.STDOUT,
+        env=dict(os.environ, WB_PROXY_USAGE_DIR=usage_dir,
+                 WB_PROXY_PANEL_SESSIONS_FILE=sessions_file),
+    )
+    return proc, log_fh, log_path
+
+
+def stop_gateway(proc, log_fh):
+    if proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except Exception:
+            proc.kill()
+    log_fh.close()
+
+
+print("[0] the token table on its own: digests on disk, expiry honoured on load")
+
+unit_file = os.path.join(work, "unit-sessions.json")
+unit = settings.PanelSessions(ttl=60, path=unit_file)
+unit_token = unit.create()
+check("a freshly issued token is valid", unit.valid(unit_token) is True)
+check("a token that was never issued is not", unit.valid("never-issued") is False)
+
+with open(unit_file, encoding="utf-8") as fh:
+    unit_raw = fh.read()
+check("the store does not contain the raw token", unit_token not in unit_raw,
+      unit_raw[:120])
+check("the store holds the token's digest instead",
+      settings.PanelSessions._key(unit_token) in json.loads(unit_raw).get("tokens", {}),
+      unit_raw[:120])
+
+check("a second instance reading the same file accepts the token",
+      settings.PanelSessions(ttl=60, path=unit_file).valid(unit_token) is True)
+settings.PanelSessions(ttl=60, path=unit_file).revoke(unit_token)
+check("revoke survives a reload",
+      settings.PanelSessions(ttl=60, path=unit_file).valid(unit_token) is False)
+
+# 过期：直接把文件里的到期时间改成过去，模拟"时间流逝后重新读盘"。
+short = os.path.join(work, "short-sessions.json")
+expiring = settings.PanelSessions(ttl=60, path=short)
+stale = expiring.create()
+with open(short, encoding="utf-8") as fh:
+    stored = json.load(fh)
+stored["tokens"] = {k: time.time() - 1 for k in stored["tokens"]}
+with open(short, "w", encoding="utf-8") as fh:
+    json.dump(stored, fh)
+check("a token past its TTL is refused after a reload",
+      settings.PanelSessions(ttl=60, path=short).valid(stale) is False)
+pruner = settings.PanelSessions(ttl=60, path=short)
+pruner.create()
+with open(short, encoding="utf-8") as fh:
+    left = json.load(fh).get("tokens", {})
+check("expired entries are pruned on the next write", len(left) == 1, left)
+
+corrupt = os.path.join(work, "corrupt-sessions.json")
+with open(corrupt, "w", encoding="utf-8") as fh:
+    fh.write("{not json at all")
+check("a damaged store is ignored instead of raising",
+      settings.PanelSessions(path=corrupt).valid("anything") is False)
+
+memory_only = settings.PanelSessions()
+check("path=None keeps the old in-memory behaviour",
+      memory_only.valid(memory_only.create()) is True)
+
+print()
+print("[1] the password prompt is the only way in, and it hands out a cookie")
+
 port = free_port()
-
-log_fh = open(log_path, "w", encoding="utf-8")
-proc = subprocess.Popen(
-    [sys.executable, os.path.join(ROOT, "wb_proxy.py"), "--port", str(port),
-     "--host", "127.0.0.1", "--accounts-dir", store,
-     "--panel-password", FIRST_PASSWORD],
-    cwd=ROOT, stdout=log_fh, stderr=subprocess.STDOUT,
-    env=dict(os.environ, WB_PROXY_USAGE_DIR=os.path.join(work, "usage")),
-)
-
+proc, log_fh, log_path = start_gateway(port, "gateway-1.log")
 try:
     if not wait_ready(port, proc, log_path):
         print("  [FAIL] the gateway did not come up - nothing else can be checked")
         sys.exit(1)
 
-    print("[1] the password prompt is the only way in, and it hands out a cookie")
     status, _, _ = call(port, "GET", "/settings")
     check("a panel route without any credential is refused", status == 401, status)
 
@@ -213,12 +291,43 @@ try:
     check("the header token from before the rotation is dead too",
           call(port, "GET", "/settings", token=login.get("token"))[0] == 401)
 finally:
-    proc.terminate()
-    try:
-        proc.wait(timeout=10)
-    except Exception:
-        proc.kill()
-    log_fh.close()
+    stop_gateway(proc, log_fh)
+
+print()
+print("[6] a gateway restart does not log the browser out")
+
+port2 = free_port()
+proc2, log_fh2, log_path2 = start_gateway(port2, "gateway-2.log")
+try:
+    if not wait_ready(port2, proc2, log_path2):
+        print("  [FAIL] the restarted gateway did not come up")
+        sys.exit(1)
+
+    status, info, _ = call(port2, "GET", "/panel/status",
+                           cookie="%s=%s" % (COOKIE, fresh))
+    check("the cookie from before the restart is still accepted",
+          info.get("authenticated") is True, (status, info))
+    status, _, _ = call(port2, "GET", "/settings", cookie="%s=%s" % (COOKIE, fresh))
+    check("and it opens a panel route", status == 200, status)
+
+    status, _, _ = call(port2, "GET", "/settings", cookie="%s=forged" % COOKIE)
+    check("a forged cookie is still refused after the restart", status == 401, status)
+
+    with open(sessions_file, encoding="utf-8") as fh:
+        live_raw = fh.read()
+    check("the live store holds no raw token", fresh not in live_raw, live_raw[:120])
+    live = json.loads(live_raw)
+    check("the live store holds the digest",
+          settings.PanelSessions._key(fresh) in live.get("tokens", {}), live_raw[:120])
+
+    status, _, _ = call(port2, "POST", "/panel/logout", {},
+                        cookie="%s=%s" % (COOKIE, fresh))
+    check("logout on the restarted gateway is accepted", status == 200, status)
+    with open(sessions_file, encoding="utf-8") as fh:
+        after = json.load(fh)
+    check("and the token is gone from disk too", after.get("tokens") == {}, after)
+finally:
+    stop_gateway(proc2, log_fh2)
 
 print()
 print("  %d passed, %d failed" % (PASS, FAIL))

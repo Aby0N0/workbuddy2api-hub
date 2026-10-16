@@ -210,7 +210,9 @@ def start_server():
                 PASSWORD,
             ],
             cwd=ROOT,
-            env=dict(os.environ),
+            env=dict(os.environ,
+                     WB_PROXY_PANEL_SESSIONS_FILE=os.path.join(
+                         FIX, "panel-sessions.json")),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
