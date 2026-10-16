@@ -25,12 +25,14 @@
 | `wb_proxy.py` | 新增 `PANEL_SESSIONS_FILE`（可用 `WB_PROXY_PANEL_SESSIONS_FILE` 覆盖），构造时传进去 |
 | `tests/_test_panel_cookie_session.py` | 从 28 项扩到 45 项：新增令牌账本单测 + **真起第二个网关进程**验证重启后免登录 |
 | `tests/_isolated_dirs.py` | 隔离目录里加上会话文件 |
+| `tests/_test_pricing_panel_auth.py` | 补上它本来就该有的 `isolated_data_dirs()` 调用（上游漏了：只 import 没调用，于是它跑在真实数据目录上，会往仓库里写令牌） |
 | `tests/_test_connection_reuse.py`、`tests/_test_usage_etag_cache.py`、`tests/_mobile_check.py` | 各自启动网关时把会话文件指向自己的临时目录 |
 | `.gitignore` | 忽略 `panel-sessions.json` |
 | `README.md` | 面板密码那段（原来写着"重启后会话全清"） |
 
 **合并上游时的冲突风险**：`wb_settings.py`（`PanelSessions` 类）、`wb_proxy.py`
-（`PANEL` 那几行）、`README.md`（同一句话）、以及那 4 个测试文件里各自一行的 `env=dict(...)`。
+（`PANEL` 那几行）、`README.md`（同一句话）、以及那几个测试文件里各自一行的
+`env=dict(...)` / `isolated_data_dirs(...)`。
 
 ## 2. 界面配色换回旧版的蓝灰
 
