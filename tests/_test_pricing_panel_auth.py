@@ -59,6 +59,9 @@ class Request(object):
 
     _is_panel_route = staticmethod(proxy.Handler._is_panel_route)
     _panel_token = proxy.Handler._panel_token
+    # _panel_ok() accepts the header token or the panel cookie, so the fake has
+    # to offer both accessors; self.headers is already a plain dict here.
+    _panel_cookie_token = proxy.Handler._panel_cookie_token
     _panel_ok = proxy.Handler._panel_ok
     _key_ok = proxy.Handler._key_ok
     _key_realm = proxy.Handler._key_realm
