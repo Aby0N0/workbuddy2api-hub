@@ -8,22 +8,29 @@
 > **合并上游请双击 `update-from-upstream.bat`。**
 > **不要点 GitHub 上的 "Sync fork"** —— 那会把下面这些改动冲掉。
 
-## 1. 面板密码改成 7 天免登录（cookie 会话）
+## 1. 面板密码改成 7 天免登录（cookie 会话 + 落盘）
 
 **改了什么**：面板登录成功后，除了原来的请求头令牌，再下发一个 `HttpOnly` cookie
-（有效期 7 天）。下次打开面板不用重新输密码。
+（有效期 7 天）。并且把令牌账本**落到磁盘**，所以**网关重启也不用重新输密码**。
+
+**这 7 天从"登录那一刻"起算，不因重启而重置**，也不是永久 —— 第 8 天照样要重新登录。
+账本文件 `panel-sessions.json` 里**只存令牌的 SHA-256 摘要，不存原文**，
+所以文件泄露也拿不去登录；删掉这个文件 = 所有浏览器重新登录。
 
 **改了哪些文件**
 
 | 文件 | 改了什么 |
 |---|---|
-| `wb_settings.py` | 新增 `PANEL_COOKIE_NAME` 常量 |
-| `wb_proxy.py` | 登录 / 登出 / 改密码时下发与清除 cookie；鉴权改成"请求头令牌 **或** cookie" |
-| `tests/_test_panel_cookie_session.py` | 新增，28 项端到端检查（真起网关、真走 socket） |
-| `tests/_test_pricing_panel_auth.py` | 测试里的假 Request 对象补上 cookie 读取方法 |
-| `README.md` | 面板密码那一段的说明 |
+| `wb_settings.py` | `PanelSessions` 支持落盘（`path=` 参数）、只存摘要、损坏文件不致命 |
+| `wb_proxy.py` | 新增 `PANEL_SESSIONS_FILE`（可用 `WB_PROXY_PANEL_SESSIONS_FILE` 覆盖），构造时传进去 |
+| `tests/_test_panel_cookie_session.py` | 从 28 项扩到 45 项：新增令牌账本单测 + **真起第二个网关进程**验证重启后免登录 |
+| `tests/_isolated_dirs.py` | 隔离目录里加上会话文件 |
+| `tests/_test_connection_reuse.py`、`tests/_test_usage_etag_cache.py`、`tests/_mobile_check.py` | 各自启动网关时把会话文件指向自己的临时目录 |
+| `.gitignore` | 忽略 `panel-sessions.json` |
+| `README.md` | 面板密码那段（原来写着"重启后会话全清"） |
 
-**合并上游时的冲突风险**：`wb_proxy.py`（登录相关函数）、`README.md`（同一句话）。
+**合并上游时的冲突风险**：`wb_settings.py`（`PanelSessions` 类）、`wb_proxy.py`
+（`PANEL` 那几行）、`README.md`（同一句话）、以及那 4 个测试文件里各自一行的 `env=dict(...)`。
 
 ## 2. 界面配色换回旧版的蓝灰
 
@@ -47,14 +54,25 @@
 
 **合并上游时的冲突风险**：无（上游没有这两个文件）。
 
-## 4. 带图标的最小化启动器（exe）
+## 4. 带图标的最小化启动器
 
 - `WorkBuddy 网关.exe` —— 双击它 = 用**最小化**的方式启动 `start-wb-proxy.bat`。
-  图标已内嵌在 exe 里；外壳编译成图形程序，**不分配控制台，所以不闪黑框**。
-- `workbuddy.ico` —— 图标原件（备用，比如给快捷方式换图标）。
+  图标已内嵌在 exe 里；外壳编译成图形程序（`/target:winexe`），
+  **不分配控制台，所以不闪黑框**。它**不替代** `start-wb-proxy.bat`，只是调用它 ——
+  上游以后更新那个 bat，这个 exe 不用重新编译。
+- `WorkBuddyLauncher.cs` —— 那个 exe 的**全部源码**（约 100 行 C#）。
+- `build-launcher.py` —— 编译命令：调用 Windows 自带的
+  `csc.exe`（`C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe`），
+  **不联网、不下载任何东西**，产物约 285KB（绝大部分是图标）。
+- `workbuddy.ico` —— 图标原件（exe 里已内嵌一份，这份备用）。
 
-它**不替代** `start-wb-proxy.bat`，只是调用它 ——
-所以上游以后更新那个 bat，这个 exe 不用重新编译。
+想换图标：把新的 `.ico` 命名为 `workbuddy.ico`，然后
+
+```
+python build-launcher.py . build-result.json
+```
+
+把生成的 `launcher.exe` 复制到仓库根目录、改名成 `WorkBuddy 网关.exe` 即可。
 
 **合并上游时的冲突风险**：无。
 
