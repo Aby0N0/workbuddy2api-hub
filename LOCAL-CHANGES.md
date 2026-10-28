@@ -87,6 +87,21 @@ python build-launcher.py . build-result.json
 
 **合并上游时的冲突风险**：无。
 
+## 5. 提前吃进来的上游 PR：#683（DSH 文件引用段 11128）
+
+上游 `main` 还没合并、但已经影响使用的修复，本地先 cherry-pick 了。
+
+- 对应提交：`fix(sanitize): 修复 DSH 文件引用段触发 11128 渠道校验`
+  （上游 PR [#683](https://github.com/ardeyouxipianyi/workbuddy2api-hub/pull/683)，
+  作者 `XiaMo233M`，`-x` 留下了 `(cherry picked from commit 7f378c3)` 一行）。
+- 内容：`wb_proxy.py` 里新增 `SANITIZE_DSH_FILEREF_RE` / `_REPLACEMENT` / `_PROBE`
+  三个常量 + 两处接入，只把 A 句的 `paths the user` 补成 `paths that the user`，
+  破坏「A 句 + B 句连续出现」这个 11-128 指纹；`tests/_test_sanitize_fingerprint.py`
+  新增 `DshFileReferenceParagraphTests` 9 项；`README.md` 加一条更新日志。
+- **合并上游时的冲突风险**：上游合并 #683 之后，这 38 行会以「两边都新增」的形式
+  撞一次，`README.md` 那条日志也可能重复。**届时采用上游版本、把本地这一次丢掉即可**
+  —— 内容完全一致，不要两条都留。
+
 ## 上游更新时要注意
 
 `start-wb-proxy.bat` 是上游的文件。上游更新它时**直接接受上游版本**就行 ——
